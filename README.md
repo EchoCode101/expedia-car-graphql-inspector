@@ -1,6 +1,7 @@
 # Expedia Car GraphQL Inspector
 
 **Version 2.2** — A browser tool that captures Expedia car rental data quickly and reliably.
+Capture Expedia Car Rental GraphQL responses and export structured CSV/JSON in seconds.
 
 ---
 
