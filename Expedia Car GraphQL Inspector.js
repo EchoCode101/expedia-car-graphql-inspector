@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Expedia GraphQL Inspector
 // @namespace    HamzaScripts
-// @version      2.2
+// @version      2.5
 // @description  Capture GraphQL requests and responses from Expedia
 // @author       Hamza
 // @match        https://www.expedia.com/*
@@ -183,17 +183,6 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
-  async function copyLatestRequest() {
-    if (!latestGraphQL) {
-      alert("No request captured yet.");
-      return;
-    }
-    await navigator.clipboard.writeText(
-      JSON.stringify(latestGraphQL.request, null, 2),
-    );
-    alert("Latest GraphQL copied.");
-  }
-
   async function parseBody(body) {
     if (!body) return null;
     if (typeof body === "string") {
@@ -268,7 +257,18 @@
     return text === "Unlimited mileage" ? "Unlimited" : text;
   }
 
-  // Fetch with timeout and retry
+  // Parse Retry-After header into milliseconds, capped at 2 minutes
+  function parseRetryAfter(resp) {
+    const header = resp.headers.get("Retry-After");
+    if (!header) return null;
+    const seconds = parseInt(header, 10);
+    if (!isNaN(seconds)) return Math.min(seconds * 1000, 120000);
+    const date = Date.parse(header);
+    if (!isNaN(date)) return Math.min(Math.max(0, date - Date.now()), 120000);
+    return null;
+  }
+
+  // Fetch with timeout and retry, respects Retry-After header
   async function fetchWithRetry(url, options, retries) {
     const maxRetries = retries ?? CONFIG.maxRetries;
 
@@ -285,6 +285,11 @@
         if (resp.ok) return resp;
         if (attempt === maxRetries)
           throw new Error(`HTTP ${resp.status} after ${maxRetries} retries`);
+        const retryAfter = parseRetryAfter(resp);
+        const delay =
+          retryAfter ??
+          randomDelay(CONFIG.retryBackoffMs * Math.pow(2, attempt), 1000);
+        await new Promise((r) => setTimeout(r, delay));
       } catch (err) {
         clearTimeout(timeoutId);
         if (attempt === maxRetries) throw err;
@@ -357,6 +362,7 @@
           json?.data?.carSearchOrRecommendations?.carSearchResults
             ?.loadMoreAction,
         requestHeaders: entry.requestHeaders,
+        _requestedOffset: nextIndex,
       };
     } finally {
       __replaying = false;
@@ -370,7 +376,9 @@
 
     let page = latestGraphQL;
     if (!page) {
-      setStatus("No base page");
+      setStatus(
+        "No base page captured yet. Perform a new car search or refresh the page to capture data again, then click Auto.",
+      );
       autoLoading = false;
       return;
     }
@@ -380,7 +388,11 @@
       page.listingCount || 0,
       25,
     );
-    if (_autoPages > 0) startProgress(_autoPages);
+    const _totalPages = _autoPages + 1;
+    if (_totalPages > 1) {
+      startProgress(_totalPages);
+      updateProgress(1);
+    }
 
     let pageNum = 0;
     let totalListings = page.listingCount || 0;
@@ -399,6 +411,26 @@
           break;
         }
 
+        // Stop if page returned fewer results than requested (last page)
+        const requestedSize = page.loadMore?.searchPagination?.size ?? 25;
+        if (next.listingCount < requestedSize) {
+          next.loadMore = {
+            ...next.loadMore,
+            searchPagination: {
+              ...next.loadMore?.searchPagination,
+              hasNextPage: false,
+            },
+          };
+        }
+
+        // Dedup against already captured pages
+        const nextPageKey = next.searchId + ":" + (next._requestedOffset ?? 0);
+        if (capturedPages.has(nextPageKey)) {
+          logUI(`⏭ All remaining pages already captured`);
+          break;
+        }
+        capturedPages.add(nextPageKey);
+
         logs.push(next);
         saveState();
 
@@ -409,7 +441,7 @@
 
         updateCounter();
         logUI(`✔ Page ${pageNum + 1} | ${next.listingCount} listings`);
-        updateProgress(pageNum);
+        updateProgress(pageNum + 1);
 
         if (
           autoLoading &&
@@ -439,8 +471,12 @@
             await new Promise((r) => setTimeout(r, retryDelay));
             const retry = await replayLoadMore(page);
             if (retry.listingCount > 0) {
-              logs.push(retry);
-              saveState();
+              const retryPageKey = retry.searchId + ":" + (retry._requestedOffset ?? 0);
+              if (!capturedPages.has(retryPageKey)) {
+                capturedPages.add(retryPageKey);
+                logs.push(retry);
+                saveState();
+              }
               page = retry;
               latestGraphQL = retry;
               pageNum++;
@@ -449,7 +485,7 @@
               logUI(
                 `✔ Retry OK page ${pageNum + 1} | ${retry.listingCount} listings`,
               );
-              updateProgress(pageNum);
+              updateProgress(pageNum + 1);
               retrySuccess = true;
               break;
             }
@@ -467,10 +503,14 @@
 
     autoLoading = false;
     if (pageNum > 0) {
-      setStatus(
-        `Finished – ${pageNum + 1} pages, ${totalListings} listings total`,
+      const totalListings = logs.reduce(
+        (sum, l) => sum + (l.listingCount || 0),
+        0,
       );
-      logUI(`✔ Auto-exporting CSV (${totalListings} listings)...`);
+      setStatus(
+        `Finished – ${pageNum} auto pages, ${totalListings} total listings`,
+      );
+      logUI(`✔ Auto-exporting CSV (${totalListings} total listings)...`);
       exportCSV();
       localStorage.removeItem(CONFIG.storageKey);
     } else {
@@ -629,8 +669,8 @@
       .gql-section-badge { margin-left:auto; font-size:11px; color:#ddc729; font-weight:500; }
       .gql-section-content { overflow:hidden; transition:max-height 0.3s ease; max-height:400px; padding:0 12px 10px; }
       .gql-section-content.collapsed { max-height:0; padding-top:0; padding-bottom:0; }
-      .gql-btn-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
-      .gql-btn { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border:none; border-radius:6px; font-size:12px; font-weight:500; cursor:pointer; transition:background 0.15s,transform 0.1s,opacity 0.15s; color:#fff; line-height:1.2; }
+      .gql-btn-row { display:flex; gap:6px; margin-top:8px; }
+      .gql-btn {    width: 100%; min-height: 40px; border:none; border-radius:6px; font-size:12px; font-weight:500; cursor:pointer; transition:background 0.15s,transform 0.1s,opacity 0.15s; color:#fff; line-height:1.2; }
       .gql-btn:hover { opacity:0.9; transform:translateY(-1px); }
       .gql-btn:active { transform:translateY(0) scale(0.97); }
       .gql-btn:disabled { opacity:0.4; cursor:not-allowed; transform:none; }
@@ -687,10 +727,12 @@
           <button class="gql-btn gql-btn-stop" id="gql_stop" disabled>■ Stop</button>
           <button class="gql-btn gql-btn-action" id="gql_auto">↻ Auto</button>
           <button class="gql-btn gql-btn-stop" id="gql_stopauto">◼ Stop Auto</button>
-          <button class="gql-btn gql-btn-action" id="gql_clear">✕ Clear</button>
-          <button class="gql-btn gql-btn-export" id="gql_json">⎔ JSON</button>
+        </div>
+        <div class="gql-btn-row">
+           <button class="gql-btn gql-btn-action" id="gql_clear">✕ Clear</button>
           <button class="gql-btn gql-btn-export" id="gql_csv">⊞ CSV</button>
-          <button class="gql-btn gql-btn-export" id="gql_copy">📋 Copy</button>
+          <!-- gql_json button hidden; uncomment to restore raw JSON export -->
+          <!-- <button class="gql-btn gql-btn-export" id="gql_json">⎔ JSON</button> -->
         </div>
         <div class="gql-speed-row">
           <label>Speed:</label>
@@ -829,29 +871,45 @@
       document.getElementById("gql_stop").disabled = true;
       setStatus("Stopped");
     });
-    document
-      .getElementById("gql_auto")
-      .addEventListener("click", () => autoLoadAll());
+    document.getElementById("gql_auto").addEventListener("click", () => {
+      if (!latestGraphQL) {
+        setStatus(
+          "Perform a new car search or refresh the page to capture data again, then click Auto",
+        );
+        return;
+      }
+      if (latestGraphQL.loadMore?.searchPagination?.hasNextPage === false) {
+        setStatus("All pages already captured. Press Clear to start fresh.");
+        return;
+      }
+      autoLoadAll();
+    });
     document.getElementById("gql_stopauto").addEventListener("click", () => {
+      if (!autoLoading) {
+        setStatus("Auto load is not running");
+        return;
+      }
       stopAutoLoad();
       resetProgress();
       setStatus("Stopping...");
     });
     document.getElementById("gql_clear").addEventListener("click", () => {
+      stopAutoLoad();
       logs.length = 0;
       capturedPages.clear();
       latestGraphQL = null;
+      capturing = false;
+      document.getElementById("gql_start").disabled = false;
+      document.getElementById("gql_stop").disabled = true;
       document.getElementById("gql_output").value = "";
       resetProgress();
       updateCounter();
-      setStatus("Cleared");
+      setStatus(
+        "Cleared. Perform a new car search or refresh the page to start again.",
+      );
       localStorage.removeItem(CONFIG.storageKey);
     });
-    document.getElementById("gql_json").addEventListener("click", exportJSON);
     document.getElementById("gql_csv").addEventListener("click", exportCSV);
-    document
-      .getElementById("gql_copy")
-      .addEventListener("click", copyLatestRequest);
 
     // Initial state: capturing starts true, so Start disabled, Stop enabled
     if (capturing) {
