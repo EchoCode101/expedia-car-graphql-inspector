@@ -67,6 +67,24 @@ Press **Ctrl + S** (Windows) or **Cmd + S** (Mac) to save. Tampermonkey will now
 
 A **live progress bar** shows you exactly where you are — page count, percentage complete, and elapsed time — so you always know how the auto-load is progressing.
 
+
+## Expanded Panel view in Top-Right Corner (Default)
+<img width="1802" height="673" alt="Expanded Panel view in Top-Right Corner
+" src="https://github.com/user-attachments/assets/b10ebeb2-390c-48bf-a528-4060aa7425bd" />
+
+
+
+## Collapsed Menu in Panel view in Top-Right Corner
+<img width="1561" height="882" alt="Collapsed Menu in Panel view in Top-Right Corner" src="https://github.com/user-attachments/assets/db61c0eb-4b1f-4f0c-b99c-04a70ad6cca3" />
+
+
+## Collapsed Panel view in Top-Right Corner
+<img width="1559" height="879" alt="Collapsed Panel view in Top-Right Corner" src="https://github.com/user-attachments/assets/ccee49d0-cefa-439d-a8ea-d001b122239d" />
+
+## Working Video
+
+https://github.com/user-attachments/assets/8f1847bb-ef81-4913-acc1-f7e2181b291c
+
 ---
 
 ## Features
